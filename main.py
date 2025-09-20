@@ -5,44 +5,31 @@ import numpy as np
 import cvzone
 import time
 import csv
-import os
 from datetime import datetime
 
-# 📌 Load mobile camera (DroidCam)
-cmp = cv2.VideoCapture(1)  # 1 = external/mobile cam
+cmp = cv2.VideoCapture(0)
 cmp.set(3, 640)
 cmp.set(4, 480)
 
-# 📌 Load known face encodings
+# Load encoding file
 print("Loading Encode file...")
 with open("EncodeFile.p", "rb") as file:
     encodeListKnown, studentsId = pickle.load(file)
 print("Encode file loaded")
 
-# 📌 Setup CSV file for attendance
+# Setup CSV file for attendance
 now = datetime.now()
 current_date = now.strftime("%Y-%m-%d")
-filename = current_date + '.csv'
-
-file_exists = os.path.isfile(filename)
-f = open(filename, 'a+', newline='')
+f = open(current_date + '.csv', 'w+', newline='')
 lnwriter = csv.writer(f)
+lnwriter.writerow(["Name", "Time"])  # header
 
-if not file_exists:
-    lnwriter.writerow(["ID", "Time"])  # write header only once
+# Copy of student IDs (for marking attendance once)
+students = studentsId.copy()
 
-# 📌 Load last marked data (persistent across runs)
-if os.path.exists("last_marked.p"):
-    with open("last_marked.p", "rb") as f2:
-        last_marked = pickle.load(f2)
-else:
-    last_marked = {}
+detected = False   # flag if a known face detected
+start_time = None  # to track exit time
 
-# 📌 Function to normalize ID (remove "_1", "_2", etc.)
-def normalize_id(student_id):
-    return student_id.split("_")[0]
-
-# 📌 Face recognition loop
 while True:
     success, img = cmp.read()
     if not success:
@@ -50,10 +37,10 @@ while True:
         break
 
     # Resize for faster processing
-    imgSmall = cv2.resize(img, (0, 0), fx=0.25, fy=0.25)
+    imgSmall = cv2.resize(img, (0, 0), None, 0.25, 0.25)
     imgSmall = cv2.cvtColor(imgSmall, cv2.COLOR_BGR2RGB)
 
-    # Detect faces and encodings
+    # Detect faces
     faceCurrFrame = face_recognition.face_locations(imgSmall)
     encodeCurrFrame = face_recognition.face_encodings(imgSmall, faceCurrFrame)
 
@@ -64,41 +51,40 @@ while True:
 
         # Scale back to original frame
         y1, x2, y2, x1 = faceLoc
-        y1, x2, y2, x1 = y1*4, x2*4, y2*4, x1*4
-        bbox = (x1, y1, x2-x1, y2-y1)
+        y1, x2, y2, x1 = y1 * 4, x2 * 4, y2 * 4, x1 * 4
+        bbox = (x1, y1, x2 - x1, y2 - y1)
 
-        # ✅ Use stricter threshold to avoid false matches
-        if matches[matchIndex] and faceDist[matchIndex] < 0.45:
-            student_id = studentsId[matchIndex]
-            base_id = normalize_id(student_id)
-            current_time = datetime.now().strftime("%H:%M:%S")
+        if matches[matchIndex]:
+            # ✅ Known face
+            name = studentsId[matchIndex]
+            img = cvzone.cornerRect(img, bbox, rt=0, colorC=(0, 255, 0))
+            cv2.putText(img, "Successful", (x1, y1 - 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
+            print("✅ Known Face Detected:", name)
 
-            # Check last marked time (30-second rule)
-            if base_id not in last_marked or (time.time() - last_marked[base_id]) > 30:
-                lnwriter.writerow([base_id, current_time])
+            # Attendance marking
+            if name in students:
+                students.remove(name)
+                current_time = datetime.now().strftime("%H:%M:%S")
+                lnwriter.writerow([name, current_time])
                 f.flush()
-                last_marked[base_id] = time.time()
+                print(f"*** ATTENDANCE MARKED for: {name} ***")
 
-                # Save updated last_marked
-                with open("last_marked.p", "wb") as f2:
-                    pickle.dump(last_marked, f2)
+            if not detected:
+                detected = True
+                start_time = time.time()
 
-                print(f"*** ATTENDANCE MARKED for: {base_id} ***")
-                cvzone.cornerRect(img, bbox, rt=0, colorC=(0, 255, 0))
-                cv2.putText(img, f"{base_id} Marked", (x1, y1-20),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
-            else:
-                print(f"⏳ Already marked for {base_id}, wait 30s")
-                cvzone.cornerRect(img, bbox, rt=0, colorC=(0, 255, 255))
-                cv2.putText(img, f"{base_id} Already Marked", (x1, y1-20),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 3)
         else:
             # ❌ Unknown face
-            cvzone.cornerRect(img, bbox, rt=0, colorC=(0, 0, 255))
-            cv2.putText(img, "Unknown", (x1, y1-20),
+            img = cvzone.cornerRect(img, bbox, rt=0, colorC=(0, 0, 255))
+            cv2.putText(img, "Unknown", (x1, y1 - 20),
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
 
     cv2.imshow("Attendance System", img)
+
+    # Auto close after 1 second if a known face was detected
+    if detected and (time.time() - start_time > 1):
+        break
 
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
@@ -107,3 +93,4 @@ print("Shutting down...")
 cmp.release()
 cv2.destroyAllWindows()
 f.close()
+
